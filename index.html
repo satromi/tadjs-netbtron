@@ -519,17 +519,22 @@
                 $('supabase-url').value = config.url;
                 $('supabase-key').value = config.key;
 
-                // URLフラグメントをクリーンアップ
-                history.replaceState(null, '', window.location.pathname + window.location.search);
-
                 setStatus('認証情報を確認中...');
-                const { data: { session } } = await _supabase.auth.getSession();
-                if (session) {
-                    await checkAdminAccess(session);
-                } else {
-                    showPanel('login-panel');
-                    setStatus('セッションの確立に失敗しました', 'error');
-                }
+
+                // onAuthStateChangeでセッション確立を待つ
+                // (URLフラグメントのトークンをsupabase-jsが読み取った後に処理)
+                _supabase.auth.onAuthStateChange(async (event, session) => {
+                    if (event === 'SIGNED_IN' && session) {
+                        // セッション確立後にURLフラグメントをクリーンアップ
+                        history.replaceState(null, '', window.location.pathname + window.location.search);
+                        await checkAdminAccess(session);
+                    } else if (event === 'TOKEN_REFRESHED') {
+                        // トークンリフレッシュは無視
+                    } else if (event === 'INITIAL_SESSION' && !session) {
+                        showPanel('login-panel');
+                        setStatus('セッションの確立に失敗しました', 'error');
+                    }
+                });
             } else if (config) {
                 // 通常ロード: セッション復元試行
                 initSupabase(config.url, config.key);
