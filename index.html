@@ -504,57 +504,71 @@
             await loadInvites();
         }
 
+        // --- セッション待機ユーティリティ ---
+
+        // onAuthStateChangeのINITIAL_SESSIONをPromiseで待つ
+        // (createClient後の非同期初期化完了を確実に待機)
+        function waitForInitialSession(timeoutMs) {
+            return new Promise((resolve) => {
+                const timer = setTimeout(() => {
+                    resolve(null);
+                }, timeoutMs || 10000);
+                const { data: { subscription } } = _supabase.auth.onAuthStateChange((event, session) => {
+                    if (event === 'INITIAL_SESSION') {
+                        clearTimeout(timer);
+                        subscription.unsubscribe();
+                        resolve(session);
+                    }
+                });
+            });
+        }
+
         // --- メイン初期化 ---
 
         async function main() {
             const config = loadConfig();
 
-            // URLフラグメントにトークンがあるか（OAuthコールバック）
-            const hashParams = new URLSearchParams(window.location.hash.substring(1));
-            const hasAuthCallback = hashParams.has('access_token');
-
-            if (hasAuthCallback && config) {
-                // OAuthコールバック: configは保存済み
-                initSupabase(config.url, config.key);
-                $('supabase-url').value = config.url;
-                $('supabase-key').value = config.key;
-
-                setStatus('認証情報を確認中...');
-
-                // onAuthStateChangeでセッション確立を待つ
-                // (URLフラグメントのトークンをsupabase-jsが読み取った後に処理)
-                _supabase.auth.onAuthStateChange(async (event, session) => {
-                    if (event === 'SIGNED_IN' && session) {
-                        // セッション確立後にURLフラグメントをクリーンアップ
-                        history.replaceState(null, '', window.location.pathname + window.location.search);
-                        await checkAdminAccess(session);
-                    } else if (event === 'TOKEN_REFRESHED') {
-                        // トークンリフレッシュは無視
-                    } else if (event === 'INITIAL_SESSION' && !session) {
-                        showPanel('login-panel');
-                        setStatus('セッションの確立に失敗しました', 'error');
-                    }
-                });
-            } else if (config) {
-                // 通常ロード: セッション復元試行
-                initSupabase(config.url, config.key);
-                $('supabase-url').value = config.url;
-                $('supabase-key').value = config.key;
-
-                const { data: { session } } = await _supabase.auth.getSession();
-                if (session) {
-                    await checkAdminAccess(session);
-                } else {
-                    showPanel('login-panel');
-                    setStatus('ログインしてください');
-                }
-            } else {
+            if (!config) {
                 showPanel('config-panel');
                 setStatus('Supabase接続情報を入力してください');
+                setupEventListeners();
+                return;
             }
 
-            // --- イベントリスナー ---
+            initSupabase(config.url, config.key);
+            $('supabase-url').value = config.url;
+            $('supabase-key').value = config.key;
 
+            // OAuthコールバック判定（implicitフロー: #access_token / PKCEフロー: ?code）
+            const isAuthCallback = window.location.hash.includes('access_token')
+                || new URLSearchParams(window.location.search).has('code');
+
+            if (isAuthCallback) {
+                setStatus('認証情報を確認中...');
+            }
+
+            // INITIAL_SESSIONイベントを待機（supabase-jsの初期化完了を待つ）
+            const session = await waitForInitialSession(10000);
+
+            // URLからauth情報をクリーンアップ
+            if (isAuthCallback) {
+                history.replaceState(null, '', window.location.pathname);
+            }
+
+            if (session) {
+                await checkAdminAccess(session);
+            } else if (isAuthCallback) {
+                showPanel('login-panel');
+                setStatus('セッションの確立に失敗しました', 'error');
+            } else {
+                showPanel('login-panel');
+                setStatus('ログインしてください');
+            }
+
+            setupEventListeners();
+        }
+
+        function setupEventListeners() {
             $('btn-connect').addEventListener('click', function() {
                 const url = $('supabase-url').value.trim();
                 const key = $('supabase-key').value.trim();
